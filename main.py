@@ -20,7 +20,7 @@ class BaoXiangPlugin(Star):
         self.config = config or {}
         self.waiting_for_image = {}
         self.ocr_url = self.config.get("ocr_url", "")
-        self.ocr_key = self.config.get("ocr_key", "")
+        self.ocr_key = self.config.get("ocr_api_key", "")
         logger.info(f"ocr_url {self.ocr_url} ocr_key: {self.ocr_key}")
         logger.info("宝箱识别插件已初始化")
 
