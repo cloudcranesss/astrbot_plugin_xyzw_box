@@ -15,11 +15,12 @@ from astrbot.core.star.filter.event_message_type import EventMessageType
 
 @register("咸鱼之王-宝箱识别", "cloudcranesss", "通过OCR识别咸鱼之王游戏中的宝箱数量", "1.0.1")
 class BaoXiangPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig = None):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        self.config = config or {}
         self.waiting_for_image = {}
-        self.ocr_url = config.get("ocr_url")
-        self.ocr_key = config.get("ocr_key")
+        self.ocr_url = self.config.get("ocr_url", "")
+        self.ocr_key = self.config.get("ocr_key", "")
         logger.info(f"ocr_url {self.ocr_url} ocr_key: {self.ocr_key}")
         logger.info("宝箱识别插件已初始化")
 
@@ -58,7 +59,7 @@ class BaoXiangPlugin(Star):
 
         if not image_url:
             # 如果没有图片，提示用户
-            yield event.plain_result("请发送图片")
+            logger.error("没有找到图片，请重新发送")
             return
 
         # 清除等待状态
