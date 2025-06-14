@@ -6,7 +6,6 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 from PIL import Image
-import requests
 import tempfile
 import json
 
@@ -23,6 +22,7 @@ class BaoXiangPlugin(Star):
         self.ocr_key = self.config.get("ocr_api_key", "")
         logger.info(f"ocr_url {self.ocr_url} ocr_key: {self.ocr_key}")
         logger.info("宝箱识别插件已初始化")
+        self.session = None  # 初始化session
 
     @filter.command("xyzw", "识别宝箱")
     async def start_command(self, event: AstrMessageEvent):
@@ -31,7 +31,7 @@ class BaoXiangPlugin(Star):
         # 设置该用户为等待图片状态
         self.waiting_for_image[user_id] = True
         # 回复用户，要求发送图片
-        yield event.plain_result("🖼️ 请发送宝箱截图（60秒内）")
+        yield event.plain_result("🖼🖼🖼️ 请发送宝箱截图（60秒内）")
 
         # 设置一个定时器，60秒后清除等待状态
         async def clear_state():
@@ -67,7 +67,7 @@ class BaoXiangPlugin(Star):
 
         try:
             # 下载图片
-            yield event.plain_result("🔍 开始处理图片...")
+            yield event.plain_result("🔍🔍 开始处理图片...")
             image_path = await self.download_image(image_url)
 
             # 处理图片并获取结果
@@ -78,48 +78,43 @@ class BaoXiangPlugin(Star):
 
         except Exception as e:
             logger.error(f"处理失败: {str(e)}")
-            yield event.plain_result(f"❌ 处理失败: {str(e)}")
+            yield event.plain_result(f"❌❌ 处理失败: {str(e)}")
 
     async def download_image(self, url: str) -> str:
-        """下载图片到本地临时文件"""
+        """异步下载图片到本地临时文件"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+
         try:
-            response = requests.get(url, stream=True)
-            if response.status_code != 200:
-                raise Exception(f"下载图片失败: HTTP {response.status_code}")
+            async with self.session.get(url) as response:
+                if response.status != 200:
+                    raise Exception(f"下载图片失败: HTTP {response.status}")
 
-            # 创建临时文件
-            _, ext = os.path.splitext(url)
-            with tempfile.NamedTemporaryFile(suffix=ext or ".jpg", delete=False) as tmp_file:
-                for chunk in response.iter_content(chunk_size=8192):
-                    tmp_file.write(chunk)
-                return tmp_file.name
-
+                # 创建临时文件
+                _, ext = os.path.splitext(url)
+                with tempfile.NamedTemporaryFile(suffix=ext or ".jpg", delete=False) as tmp_file:
+                    while True:
+                        chunk = await response.content.read(8192)
+                        if not chunk:
+                            break
+                        tmp_file.write(chunk)
+                    return tmp_file.name
         except Exception as e:
             logger.error(f"图片下载失败: {str(e)}")
             raise Exception("图片下载失败，请重试")
-
-    async def init_session(self):
-        """初始化异步会话"""
-        try:
-            if not hasattr(self, 'session') or not self.session or self.session.closed:
-                self.session = aiohttp.ClientSession()
-        except Exception as e:
-            logger.error(f"会话初始化失败: {str(e)}")
-            raise
 
     async def process_image(self, image_path: str) -> str:
         """处理图片并返回结果"""
         cut1_path, cut2_path = None, None
         try:
-            # 初始化会话
-            await self.init_session()
-
             # 1. 裁剪图片
             cut1_path, cut2_path = self.crop_image(image_path)
 
-            # 2. OCR识别
-            cut1_text = self.ocr_text(cut1_path)
-            cut2_text = self.ocr_text(cut2_path)
+            # 2. 异步并发执行OCR识别
+            cut1_text, cut2_text = await asyncio.gather(
+                self.async_ocr_text(cut1_path),
+                self.async_ocr_text(cut2_path)
+            )
 
             # 3. 数据解析
             pre_code = self.parse_pre_code(cut1_text)
@@ -129,24 +124,44 @@ class BaoXiangPlugin(Star):
             return self.calculate_result(wooden, silver, gold, platinum, pre_code)
 
         finally:
-            # 清理临时文件和关闭会话
-            if image_path and os.path.exists(image_path):
-                os.unlink(image_path)
-            if cut1_path and os.path.exists(cut1_path):
-                os.unlink(cut1_path)
-            if cut2_path and os.path.exists(cut2_path):
-                os.unlink(cut2_path)
-            await self.close_session()
+            # 清理临时文件
+            for path in [image_path, cut1_path, cut2_path]:
+                if path and os.path.exists(path):
+                    os.unlink(path)
 
-    async def close_session(self):
-        """关闭异步会话"""
+    async def async_ocr_text(self, image_path: str) -> str:
+        """异步OCR识别文本"""
+        logger.info(f"使用异步OCR处理图片: {image_path}")
+
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+
+        url = f"{self.ocr_url}/parse/image"
+        data = aiohttp.FormData()
+        data.add_field('apikey', self.ocr_key)
+        data.add_field('language', 'chs')
+        data.add_field('OCREngine', '2')
+        data.add_field('file', open(image_path, 'rb'), filename=os.path.basename(image_path))
+
         try:
-            if hasattr(self, 'session') and self.session and not self.session.closed:
-                await self.session.close()
+            async with self.session.post(url, data=data) as response:
+                if response.status != 200:
+                    error_msg = await response.text()
+                    logger.error(f"OCR API错误: {error_msg}")
+                    raise Exception(f"OCR服务错误: HTTP {response.status}")
+
+                response_data = await response.json()
+                return response_data["ParsedResults"][0]["ParsedText"]
+
+        except (KeyError, IndexError) as e:
+            logger.error(f"解析OCR响应失败: {str(e)}")
+            raise Exception("OCR响应解析失败")
+        except json.JSONDecodeError:
+            logger.error("无效的OCR响应")
+            raise Exception("OCR服务返回了无效的响应")
         except Exception as e:
-            logger.error(f"会话关闭失败: {str(e)}")
-        finally:
-            self.session = None
+            logger.error(f"OCR请求失败: {str(e)}")
+            raise Exception("OCR服务请求失败")
 
     def crop_image(self, image_path: str) -> tuple[str, str]:
         """裁剪图片并返回路径"""
@@ -173,40 +188,6 @@ class BaoXiangPlugin(Star):
         except Exception as e:
             logger.error(f"图片裁剪失败: {str(e)}")
             raise Exception("图片处理失败，请确保发送的是有效的游戏截图")
-
-    def ocr_text(self, image_path: str) -> str:
-        """OCR识别文本"""
-        logger.info(f"使用OCR处理图片: {image_path}")
-
-        url = f"{self.ocr_url}/parse/image"
-        files = {"file": open(image_path, "rb")}
-        payload = {
-            "apikey": self.ocr_key,
-            "language": "chs",
-            "OCREngine": "2"
-        }
-        response = requests.post(url, files=files, data=payload)
-
-        if response.status_code != 200:
-            # 尝试解析错误信息
-            try:
-                error_data = response.json()
-                error_msg = error_data.get("ErrorMessage", response.text)
-            except:
-                error_msg = response.text
-            logger.error(f"OCR API错误: {error_msg}")
-            raise Exception(f"OCR服务错误: {error_msg}")
-
-        # 解析响应
-        try:
-            response_data = response.json()
-            return response_data["ParsedResults"][0]["ParsedText"]
-        except (KeyError, IndexError, TypeError) as e:
-            logger.error(f"解析OCR响应失败: {str(e)}, 响应内容: {response.text[:200]}")
-            raise Exception("OCR响应解析失败")
-        except json.JSONDecodeError:
-            logger.error(f"无效的OCR响应: {response.text[:200]}")
-            raise Exception("OCR服务返回了无效的响应")
 
     def parse_pre_code(self, text: str) -> int:
         """解析预设积分"""
