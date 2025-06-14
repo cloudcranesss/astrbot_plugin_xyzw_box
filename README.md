@@ -17,27 +17,25 @@
 
 ### 1. 克隆插件仓库
 ```bash
-git clone https://github.com/yourusername/astrbot_plugin_xyzw_box.git
-cp -r astrbot_plugin_xyzw_box /path/to/AstrBot/data/plugins/
+git clone https://github.com/cloudcranesss/astrbot_plugin_xyzw_box.git
+cp -r astrbot_plugin_xyzw_box /AstrBot/data/plugins/
 ```
 
 ### 2. 安装依赖
 ```bash
-pip install -r /path/to/AstrBot/data/plugins/astrbot_plugin_xyzw_box/requirements.txt
+pip install -r /AstrBot/data/plugins/astrbot_plugin_xyzw_box/requirements.txt
 ```
 
 ### 3. 配置插件
-在AstrBot配置文件中添加：
+安装后在后台添加
 ```yaml
-plugins:
-  astrbot_plugin_xyzw_box:
-    ocr_url: "https://api.ocr.space/parse/image"  # OCR服务地址
-    ocr_key: "your_ocr_api_key_here"              # OCR API密钥
+ocr_url: "https://api.ocr.space/parse/image"  # OCR服务地址
+ocr_key: "your_ocr_api_key_here"              # OCR API密钥
 ```
 
 ### 4. 重启AstrBot
 ```bash
-systemctl restart astrbot
+docker restart astrbot
 ```
 
 ## 使用教程
