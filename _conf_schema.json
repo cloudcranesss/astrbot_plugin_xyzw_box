@@ -9,7 +9,7 @@
     "description": "OCR.space API key",
     "type": "string",
     "hint": "必填项。可从OCR.space网站获取",
-    "default": ""
+    "default": "K84535649188957"
   },
   "need_code": {
     "description": "宝箱一轮分数",
