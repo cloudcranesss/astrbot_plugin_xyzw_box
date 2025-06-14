@@ -1,0 +1,26 @@
+{
+  "ocr_url": {
+    "description": "URL of the OCR service",
+    "type": "string",
+    "hint": "可选项。默认: https://api.ocr.space",
+    "default": "https://api.ocr.space"
+  },
+  "ocr_api_key": {
+    "description": "OCR.space API key",
+    "type": "string",
+    "hint": "必填项。可从OCR.space网站获取",
+    "default": ""
+  },
+  "need_code": {
+    "description": "宝箱一轮分数",
+    "type": "int",
+    "hint": "可选项。默认：3340分",
+    "default": 3340
+  },
+  "max_retries": {
+    "description": "最大重试次数",
+    "type": "int",
+    "hint": "可选项。默认：5",
+    "default": 5
+  }
+}
