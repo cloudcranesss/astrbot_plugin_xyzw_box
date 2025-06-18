@@ -1,19 +1,16 @@
 import asyncio
 import base64
-import io
 import os
 import re
-from typing import Any, Coroutine
+import tempfile
+import json
+from typing import Dict, Optional
 
 import aiohttp
-from PIL.ImageFile import ImageFile
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 from PIL import Image
-import tempfile
-import json
-
 from astrbot.core.star.filter.event_message_type import EventMessageType
 
 
@@ -22,79 +19,121 @@ class BaoXiangPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config or {}
-        self.waiting_for_image = {}
+        self.waiting_for_image: Dict[str, bool] = {}  # 用户ID: 是否在等待图片
+        self.timeout_tasks: Dict[str, asyncio.Task] = {}  # 用户ID: 超时任务
         self.ocr_url = self.config.get("ocr_url", "")
         self.ocr_key = self.config.get("ocr_api_key", "")
         logger.info(f"ocr_url {self.ocr_url} ocr_key: {self.ocr_key}")
         logger.info("宝箱识别插件已初始化")
-        self.session = None  # 初始化session
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def cleanup(self):
+        """清理资源，由外部调用（例如在插件卸载时）"""
+        # 取消所有超时任务
+        for user_id, task in self.timeout_tasks.items():
+            task.cancel()
+        self.timeout_tasks.clear()
+        self.waiting_for_image.clear()
+
+        # 关闭会话
+        if self.session:
+            await self.session.close()
+            self.session = None
+        logger.info("宝箱识别插件已清理")
 
     @filter.command("xyzw", "识别宝箱")
     async def start_command(self, event: AstrMessageEvent):
         """命令触发：开始识别流程"""
         user_id = event.get_sender_id()
+
+        # 检查是否已有等待中的请求
+        if user_id in self.waiting_for_image:
+            yield event.plain_result("⚠️ 您已有待处理的图片请求，请先发送截图")
+            return
+
         # 设置该用户为等待图片状态
         self.waiting_for_image[user_id] = True
         # 回复用户，要求发送图片
         yield event.plain_result("🖼🖼🖼️ 请发送宝箱截图（60秒内）")
 
-        # 设置一个定时器，60秒后清除等待状态
-        async def clear_state():
+        # 创建超时任务
+        async def timeout_task():
             await asyncio.sleep(60)
             if user_id in self.waiting_for_image:
                 del self.waiting_for_image[user_id]
-                logger.error("图片识别超时，已取消等待")
+                if user_id in self.timeout_tasks:
+                    del self.timeout_tasks[user_id]
+                logger.info(f"用户 {user_id} 图片识别超时")
+                # 发送超时提示
+                yield event.plain_result("❌ 图片识别已超时")
 
-        asyncio.create_task(clear_state())
+        task = asyncio.create_task(timeout_task())
+        self.timeout_tasks[user_id] = task
 
     @filter.event_message_type(EventMessageType.ALL)
     async def handle_image(self, event: AstrMessageEvent):
-        """处理用户发送的图片（如果处于等待状态）"""
+        """处理所有消息，检查是否为图片消息"""
+        # 判断消息是否为图片
+        if event.get_message_outline() != "[图片]":
+            return
+
         user_id = event.get_sender_id()
-        # 如果用户不在等待状态，则忽略
         if user_id not in self.waiting_for_image:
             return
 
+        # 立即清除等待状态并取消超时任务
+        del self.waiting_for_image[user_id]
+        if user_id in self.timeout_tasks:
+            task = self.timeout_tasks[user_id]
+            task.cancel()  # 取消超时任务
+            del self.timeout_tasks[user_id]
+
         message_chain = event.get_messages()
-        logger.info(f"用户 {user_id} 发送了图片")
-        logger.info(message_chain)
+        logger.info(f"用户 {user_id} 发送了图片消息")
+
+        image_path = None
         image_url = None
+
         for msg in message_chain:
-            if hasattr(msg, 'type') and msg.type == 'Image':
+            if getattr(msg, 'type', '') == 'Image':
                 try:
-                    if msg.url:  # 普通URL图片
-                        image_url = msg.url
-                    elif msg.file:  # Base64图片
-                        # 直接保存为临时文件
+                    # 优先处理Base64图片
+                    if hasattr(msg, 'file') and msg.file:
                         image_path = await self.save_base64_image(msg.file)
-                    break
+                        break
+
+                    # 处理URL图片
+                    if hasattr(msg, 'url') and msg.url:
+                        image_url = msg.url
+                        break
                 except Exception as e:
                     logger.error(f"图片处理失败: {str(e)}")
-                    yield event.plain_result("❌ 图片解析失败，请重新发送")
+                    yield event.plain_result("❌ 图片解析失败，请重试")
                     return
 
-        if not image_url:
-            # 如果没有图片，提示用户
-            logger.error("没有找到图片，请重新发送")
+        if not image_path and not image_url:
+            logger.error("消息中未检测到有效图片")
+            yield event.plain_result("❌ 未检测到有效图片格式，请发送标准截图")
             return
 
-        # 清除等待状态
-        del self.waiting_for_image[user_id]
-
         try:
-            # 下载图片
-            yield event.plain_result("🔍🔍 开始处理图片...")
-            image_path = await self.download_image(image_url)
+            yield event.plain_result("🔍 开始处理图片...")
+
+            # 下载网络图片
+            if image_url and not image_path:
+                image_path = await self.download_image(image_url)
 
             # 处理图片并获取结果
             result = await self.process_image(image_path)
-
-            # 发送结果
-            yield event.plain_result(f"✅ 识别完成\r{result}")
+            yield event.plain_result(f"✅ 识别完成\n{result}")
 
         except Exception as e:
             logger.error(f"处理失败: {str(e)}")
-            yield event.plain_result(f"❌❌ 处理失败: {str(e)}")
+            yield event.plain_result(f"❌ 处理失败: {str(e)}")
+        finally:
+            # 清理临时文件
+            if image_path and os.path.exists(image_path):
+                os.unlink(image_path)
 
     async def save_base64_image(self, base64_str: str) -> str:
         """将base64保存为临时文件并返回路径"""
@@ -110,24 +149,6 @@ class BaoXiangPlugin(Star):
             logger.error(f"Base64保存失败: {str(e)}")
             raise Exception("图片保存失败")
 
-
-    # 转换base64为 图片
-    async def convert_base64_to_image(self, base64_str: str) -> Image.Image:
-        # 处理微信的特殊前缀
-        if base64_str.startswith("base64://"):
-            base64_str = base64_str[len("base64://"):]  # 移除前缀
-
-        # 处理其他可能的 base64 前缀格式（如 data:image/jpeg;base64,）
-        elif base64_str.startswith("data:image/") and ";base64," in base64_str:
-            base64_str = base64_str.split(",", 1)[1]
-
-        try:
-            image_data = base64.b64decode(base64_str)
-            return Image.open(io.BytesIO(image_data))
-        except Exception as e:
-            logger.error(f"Base64 解码失败: {str(e)}")
-            raise Exception("图片格式无效，请发送标准图片")
-
     async def download_image(self, url: str) -> str:
         """异步下载图片到本地临时文件"""
         if not self.session:
@@ -140,7 +161,10 @@ class BaoXiangPlugin(Star):
 
                 # 创建临时文件
                 _, ext = os.path.splitext(url)
-                with tempfile.NamedTemporaryFile(suffix=ext or ".jpg", delete=False) as tmp_file:
+                if not ext or ext not in [".jpg", ".jpeg", ".png"]:
+                    ext = ".jpg"
+
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp_file:
                     while True:
                         chunk = await response.content.read(8192)
                         if not chunk:
@@ -173,7 +197,7 @@ class BaoXiangPlugin(Star):
 
         finally:
             # 清理临时文件
-            for path in [image_path, cut1_path, cut2_path]:
+            for path in [cut1_path, cut2_path]:
                 if path and os.path.exists(path):
                     os.unlink(path)
 
@@ -207,6 +231,9 @@ class BaoXiangPlugin(Star):
         except json.JSONDecodeError:
             logger.error("无效的OCR响应")
             raise Exception("OCR服务返回了无效的响应")
+        except aiohttp.ClientError as e:
+            logger.error(f"OCR网络请求失败: {str(e)}")
+            raise Exception("OCR服务连接失败，请稍后重试")
         except Exception as e:
             logger.error(f"OCR请求失败: {str(e)}")
             raise Exception("OCR服务请求失败")
@@ -286,14 +313,14 @@ class BaoXiangPlugin(Star):
             rounds = 0
 
         return (
-            f"📦 木头箱: {wooden}\n"
-            f"🥈 白银箱: {silver}\n"
-            f"🥇 黄金箱: {gold}\n"
-            f"💎 铂金箱: {platinum}\n"
-            f"🔄 可完成轮数: {rounds}\n"
-            f"🎯 当前积分: {total}\n"
-            f"🚧 下一轮还需: {surplus}\n"
-            f"⚔️ 推荐闯关数: {surplus / 2.5:.1f}"
+            f"📦📦 木头箱: {wooden}\n"
+            f"🥈🥈 白银箱: {silver}\n"
+            f"🥇🥇 黄金箱: {gold}\n"
+            f"💎💎 铂金箱: {platinum}\n"
+            f"🔄🔄 可完成轮数: {rounds}\n"
+            f"🎯🎯 当前积分: {total}\n"
+            f"🚧🚧 下一轮还需: {surplus}\n"
+            f"⚔⚔️ 推荐闯关数: {surplus / 2.5:.1f}"
         )
 
     def adjust_pre_code(self, pre_code: int) -> int:
