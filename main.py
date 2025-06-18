@@ -1,7 +1,12 @@
 import asyncio
+import base64
+import io
 import os
 import re
+from typing import Any, Coroutine
+
 import aiohttp
+from PIL.ImageFile import ImageFile
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
@@ -51,11 +56,22 @@ class BaoXiangPlugin(Star):
             return
 
         message_chain = event.get_messages()
+        logger.info(f"用户 {user_id} 发送了图片")
+        logger.info(message_chain)
         image_url = None
         for msg in message_chain:
             if hasattr(msg, 'type') and msg.type == 'Image':
-                image_url = msg.url
-                break
+                try:
+                    if msg.url:  # 普通URL图片
+                        image_url = msg.url
+                    elif msg.file:  # Base64图片
+                        # 直接保存为临时文件
+                        image_path = await self.save_base64_image(msg.file)
+                    break
+                except Exception as e:
+                    logger.error(f"图片处理失败: {str(e)}")
+                    yield event.plain_result("❌ 图片解析失败，请重新发送")
+                    return
 
         if not image_url:
             # 如果没有图片，提示用户
@@ -79,6 +95,38 @@ class BaoXiangPlugin(Star):
         except Exception as e:
             logger.error(f"处理失败: {str(e)}")
             yield event.plain_result(f"❌❌ 处理失败: {str(e)}")
+
+    async def save_base64_image(self, base64_str: str) -> str:
+        """将base64保存为临时文件并返回路径"""
+        if base64_str.startswith("base64://"):
+            base64_str = base64_str[len("base64://"):]
+
+        try:
+            image_data = base64.b64decode(base64_str)
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
+                tmp_file.write(image_data)
+                return tmp_file.name
+        except Exception as e:
+            logger.error(f"Base64保存失败: {str(e)}")
+            raise Exception("图片保存失败")
+
+
+    # 转换base64为 图片
+    async def convert_base64_to_image(self, base64_str: str) -> Image.Image:
+        # 处理微信的特殊前缀
+        if base64_str.startswith("base64://"):
+            base64_str = base64_str[len("base64://"):]  # 移除前缀
+
+        # 处理其他可能的 base64 前缀格式（如 data:image/jpeg;base64,）
+        elif base64_str.startswith("data:image/") and ";base64," in base64_str:
+            base64_str = base64_str.split(",", 1)[1]
+
+        try:
+            image_data = base64.b64decode(base64_str)
+            return Image.open(io.BytesIO(image_data))
+        except Exception as e:
+            logger.error(f"Base64 解码失败: {str(e)}")
+            raise Exception("图片格式无效，请发送标准图片")
 
     async def download_image(self, url: str) -> str:
         """异步下载图片到本地临时文件"""
