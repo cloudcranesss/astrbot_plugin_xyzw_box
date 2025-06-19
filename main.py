@@ -67,7 +67,7 @@ class BaoXiangPlugin(Star):
                     del self.timeout_tasks[user_id]
                 logger.info(f"用户 {user_id} 图片识别超时")
                 # 使用上下文发送消息
-                yield event.plain_result("图片识别超时，请重新发送图片")
+                await event.send("❌ 图片识别超时，请重新发送图片")
 
         task = asyncio.create_task(timeout_task())
         self.timeout_tasks[user_id] = task
@@ -113,6 +113,10 @@ class BaoXiangPlugin(Star):
 
         message_chain = event.get_messages()
         logger.info(f"用户 {user_id} 发送了图片消息")
+        logger.info(message_chain)
+        with open(f"data/{uuid.uuid4()}.txt", "w") as f:
+            f.write(str(message_chain))
+            logger.info(f"文本保存成功: {f.name}")
 
         image_path = None
         image_url = None
@@ -128,10 +132,6 @@ class BaoXiangPlugin(Star):
                     # 2. 其次处理Base64图片
                     if hasattr(msg, 'file') and msg.file:
                         logger.info({msg.file})
-                        # 将msg.file保存到本地文件,以做调试
-                        with open(f"{uuid.uuid4()}.txt", "wb") as f:
-                            f.write(binascii.a2b_base64(msg.file))
-                            logger.info(f"图片保存成功: {f.name}")
                         image_path = await self.save_base64_image(msg.file)
                         break
                 except Exception as e:
