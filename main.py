@@ -7,13 +7,12 @@ import tempfile
 import json
 import uuid
 from typing import Dict, Optional
-
 import aiofiles
 import aiohttp
+from PIL import Image
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
-from PIL import Image
 from astrbot.core.star.filter.event_message_type import EventMessageType
 
 
@@ -68,10 +67,7 @@ class BaoXiangPlugin(Star):
                     del self.timeout_tasks[user_id]
                 logger.info(f"用户 {user_id} 图片识别超时")
                 # 使用上下文发送消息
-                await self.context.send_message(
-                    user_id,
-                    "⏰ 图片等待超时，请重新触发命令"
-                )
+                yield event.plain_result("图片识别超时，请重新发送图片")
 
         task = asyncio.create_task(timeout_task())
         self.timeout_tasks[user_id] = task
@@ -132,6 +128,10 @@ class BaoXiangPlugin(Star):
                     # 2. 其次处理Base64图片
                     if hasattr(msg, 'file') and msg.file:
                         logger.info({msg.file})
+                        # 将msg.file保存到本地文件,以做调试
+                        with open(f"{uuid.uuid4()}.txt", "wb") as f:
+                            f.write(binascii.a2b_base64(msg.file))
+                            logger.info(f"图片保存成功: {f.name}")
                         image_path = await self.save_base64_image(msg.file)
                         break
                 except Exception as e:
