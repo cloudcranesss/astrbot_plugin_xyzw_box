@@ -6,7 +6,7 @@ import re
 import tempfile
 import json
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Optional, Any, Coroutine
 import aiofiles
 import aiohttp
 from PIL import Image
@@ -29,7 +29,7 @@ class BaoXiangPlugin(Star):
         logger.info("宝箱识别插件已初始化")
         self.session: Optional[aiohttp.ClientSession] = None
 
-    async def cleanup(self):
+    async def terminate(self):
         """清理资源，由外部调用（例如在插件卸载时）"""
         # 取消所有超时任务
         for user_id, task in self.timeout_tasks.items():
@@ -114,9 +114,9 @@ class BaoXiangPlugin(Star):
         message_chain = event.get_messages()
         logger.info(f"用户 {user_id} 发送了图片消息")
         logger.info(message_chain)
-        with open(f"data/{uuid.uuid4()}.txt", "w") as f:
-            f.write(str(message_chain))
-            logger.info(f"文本保存成功: {f.name}")
+        # with open(f"data/{uuid.uuid4()}.txt", "w") as f:
+        #     f.write(str(message_chain))
+        #     logger.info(f"文本保存成功: {f.name}")
 
         image_path = None
         image_url = None
@@ -126,7 +126,10 @@ class BaoXiangPlugin(Star):
                 try:
                     # 1. 优先处理URL图片
                     if hasattr(msg, 'url') and msg.url:
-                        image_url = msg.url
+                        if msg.url.startswith("http"):
+                            image_url = msg.url
+                        else:
+                            image_path = msg.url
                         break
 
                     # 2. 其次处理Base64图片
@@ -257,9 +260,9 @@ class BaoXiangPlugin(Star):
         finally:
             logger.info("图片处理完成")
             # 清理临时文件
-            # for path in [cut1_path, cut2_path]:
-            #     if path and os.path.exists(path):
-            #         os.unlink(path)
+            for path in [cut1_path, cut2_path]:
+                if path and os.path.exists(path):
+                    os.unlink(path)
 
     def crop_image(self, image_path: str) -> tuple[str, str]:
         """裁剪图片并返回路径"""
